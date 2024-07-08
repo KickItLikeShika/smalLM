@@ -107,7 +107,12 @@ class LLM(nn.Module):
         
         # head to choose the next token to generate (think of it like doing classifying over the whole vocab)
         self.lm_head = nn.Linear(self.config.embed_size, self.config.vocab_size, bias=False)  
-    
+        
+        # weight sharing scheme (recommened by attention is all you need paper)
+        self.transformer.wte.weight = self.lm_head.weight
+        # another benifit from this is also saving memory, since this will be now the same matrix in memory, and this is very big amount of params
+        # embed_size*vocab_size=768*50257=38,597,376
+
     def forward(self, idx, targets=None):
         # idx is of shape (B, T)
         B, T = idx.size()
