@@ -215,6 +215,13 @@ torch.set_float32_matmul_precision('high')
 
 model = LLM(Config())
 model.to(device)
+
+# using torch complie might take some time while training the model for first step
+# but it makes your training much faster
+# this is like the GCC compiler of neutral nets
+# speedup comes from reducing python overhead + gpu read/writes
+model = torch.compile(model)
+
 print(model)
 
 
@@ -234,6 +241,7 @@ for i in range(50):
     # amp
     with torch.autocast(device_type=device, dtype=torch.bfloat16):
         logits, loss = model(x, y)
+
     loss.backward()
     optimizer.step()
 
