@@ -87,8 +87,9 @@ class TransformerDecoderBlock(nn.Module):
     
     def forward(self, x):
         # doing additions (+) for the residual connections
-        x += self.attn(self.ln_1(x)) 
-        x += self.mlp(self.ln_2(x))
+        # don't do += to avoid inplace operations, it's not good in torch
+        x = x + self.attn(self.ln_1(x)) 
+        x = x + self.mlp(self.ln_2(x))
         return x
 
 
@@ -107,7 +108,7 @@ class LLM(nn.Module):
         # head to choose the next token to generate (think of it like doing classifying over the whole vocab)
         self.lm_head = nn.Linear(self.config.embed_size, self.config.vocab_size, bias=False)  
     
-    def forward(self, idx):
+    def forward(self, idx, targets=None):
         # idx is of shape (B, T)
         B, T = idx.size()
         
@@ -119,14 +120,53 @@ class LLM(nn.Module):
         tok_emb = self.transformer.wte(idx)  # token embeddings (B, T, embed_size)
         x = tok_emb + pos_emb
         
-        # forward the blocks of the transformer
+        # forward the blocks of the transforme
         for block in self.transformer.h:
             x = block(x)
         
         # forward the final layer nor + classifier
         x = self.transformer.ln_f(x)
-        logits = self.lm_head(x)  # B, T, vocab_size
-        return logits
+        logits = self.lm_head(x)  # (B, T, vocab_size)
+        
+        # calculate loss
+        loss = None
+        if targets is not None:
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+
+        return logits, loss
+
+
+class DataLoaderLite:
+    def __init__(self, B, T):
+        self.B = B
+        self.T = T
+        
+        # at init load tokens from disk and store them in memory
+        with open('../input.txt', 'r') as f:
+            text = f.read()
+        
+        enc = tiktoken.get_encoding('gpt2')
+        tokens = enc.encode(text)
+        self.tokens = torch.tensor(tokens)
+        print(f"loaded {len(self.tokens)} tokens")
+        print(f"1 epoch = {len(self.tokens) // (self.B * self.T)} batches")
+        
+        # state 
+        self.current_position = 0
+        
+    def next_batch(self):
+        buf = self.tokens[self.current_position : self.current_position + self.B * self.T + 1]
+        x = (buf[:-1]).view(self.B, self.T)  # inputs
+        y = (buf[1:]).view(self.B, self.T)  # targets
+
+        # advance the position in the tensor
+        self.current_position += self.B * self.T
+
+        # if loading the next batch would be out of bounds, reset
+        if self.current_position + (self.B * self.T + 1) > len(self.tokens):
+            self.current_position = 0
+
+        return x, y
 
 
 # attempt to autodetect device
@@ -135,12 +175,36 @@ if torch.cuda.is_available():
     device = "cuda"
 elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
     device = "mps"
+
+# device = "cpu"
 print(f"using device: {device}")
 
+# init dataloader
+train_loader = DataLoaderLite(B=4, T=32)
 
 model = LLM(Config())
 model.to(device)
 print(model)
+
+
+# to make sure we are not being biased towards any element at the beginning of the training
+# and also make sure the weights init was legit, we have a formula to calcuate what's the reasonable starting loss (with no training at all)
+# hopefully every vocab element (each one of our classes) is getting a uniform probability, which means we are not favoring any tokens -> we are not too confident about any element at the beginning of the training
+# having vocab_size=number_of_classes=50257, and the loss is cross entropy, which is the negative likelood, then a reasonable range for the starting loss should be around -ln(1/50527) ~= 10.82 in this case
+# and we are gettin 11.06 as an inital loss, which is still in the range!
+# print(loss)
+
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+for i in range(50):
+    x, y = train_loader.next_batch()
+    x, y = x.to(device), y.to(device)
+    optimizer.zero_grad()
+    logits, loss = model(x, y)
+    loss.backward()
+    optimizer.step()
+    print(f"step: {i}, loss: {loss.item()}")
+
+import sys; sys.exit(0)
 
 num_return_sequences = 5
 max_length = 30
