@@ -29,6 +29,7 @@ class CausalSelfAttention(nn.Module):
         
         # output projection
         self.c_proj = nn.Linear(config.embed_size, config.embed_size)
+        self.c_proj.NANOGPT_SCALE_INIT = 1.0
         
         self.n_head = config.n_head
         self.embed_size = config.embed_size
@@ -69,7 +70,8 @@ class MLP(nn.Module):
         self.c_fc = nn.Linear(config.embed_size, 4 * config.embed_size)
         self.gelu = nn.GELU(approximate='tanh')
         self.c_proj = nn.Linear(4 * config.embed_size, config.embed_size)
-    
+        self.c_proj.NANOGPT_SCALE_INIT = 1.0
+
     def forward(self, x):
         x = self.c_fc(x)
         x = self.gelu(x)
@@ -112,6 +114,23 @@ class LLM(nn.Module):
         self.transformer.wte.weight = self.lm_head.weight
         # another benifit from this is also saving memory, since this will be now the same matrix in memory, and this is very big amount of params
         # embed_size*vocab_size=768*50257=38,597,376
+
+        # init params
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            std = 0.02
+            # this scaling is done to control the growth of activation inside a resdiual connection path
+            if hasattr(module, 'NANOGPT_SCALE_INIT'):
+                # 2 * self.config.n_layer = the number of resdiaul connections in our model
+                # as each layer has 2 residual connections
+                std *= (2 * self.config.n_layer) ** -0.5
+            torch.nn.init.normal_(module.weight, mean=0.0, std=std)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
     def forward(self, idx, targets=None):
         # idx is of shape (B, T)
@@ -183,6 +202,11 @@ elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
 
 # device = "cpu"
 print(f"using device: {device}")
+
+torch.manual_seed(1337)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(1337)
+
 
 # init dataloader
 train_loader = DataLoaderLite(B=4, T=32)
