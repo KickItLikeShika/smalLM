@@ -1,3 +1,4 @@
+import time
 from dataclasses import dataclass
 import math
 import torch
@@ -151,7 +152,7 @@ class LLM(nn.Module):
         # forward the final layer nor + classifier
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x)  # (B, T, vocab_size)
-        
+
         # calculate loss
         loss = None
         if targets is not None:
@@ -209,7 +210,7 @@ if torch.cuda.is_available():
 
 
 # init dataloader
-train_loader = DataLoaderLite(B=4, T=32)
+train_loader = DataLoaderLite(B=8, T=1024)
 
 model = LLM(Config())
 model.to(device)
@@ -225,13 +226,21 @@ print(model)
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
 for i in range(50):
+    t0 = time.time()
     x, y = train_loader.next_batch()
     x, y = x.to(device), y.to(device)
     optimizer.zero_grad()
     logits, loss = model(x, y)
     loss.backward()
     optimizer.step()
-    print(f"step: {i}, loss: {loss.item()}")
+
+    # wait for gpu to finish all scheduled work
+    torch.cuda.synchronize()
+    t1 = time.time()
+    dt = (t1 - t0) * 1000  # time in ms
+    tokens_per_sec = (train_loader.B * train_loader.T) / (t1 - t0)
+    print(f"step: {i}, loss: {loss.item()}, dt: {dt:.2f}ms, tok/sec: {tokens_per_sec:.2f}")
+
 
 import sys; sys.exit(0)
 
