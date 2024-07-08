@@ -208,9 +208,10 @@ torch.manual_seed(1337)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(1337)
 
-
 # init dataloader
 train_loader = DataLoaderLite(B=8, T=1024)
+
+torch.set_float32_matmul_precision('high')
 
 model = LLM(Config())
 model.to(device)
