@@ -216,7 +216,7 @@ train_loader = DataLoaderLite(B=8, T=1024)
 
 torch.set_float32_matmul_precision('high')
 
-model = LLM(Config())
+model = LLM(Config(vocab_size=50304))
 model.to(device)
 
 # using torch complie might take some time while training the model for first step
