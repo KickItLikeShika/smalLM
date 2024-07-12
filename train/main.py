@@ -3,6 +3,7 @@ import time
 from dataclasses import dataclass
 import inspect
 import math
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -10,6 +11,12 @@ import tiktoken
 from torch.distributed import init_process_group, destroy_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
+
+
+def load_tokens(filename):
+    npt = np.load(filename)
+    ptt = torch.tensor(npt, dtype=torch.long)
+    return ptt
 
 
 @dataclass
@@ -195,11 +202,26 @@ class LLM(nn.Module):
 
 
 class DataLoaderLite:
-    def __init__(self, B, T, process_rank, num_processes):
+    def __init__(self, B, T, process_rank, num_processes, split):
         self.B = B
         self.T = T
         self.process_rank = process_rank
         self.num_processes = num_processes
+        assert split in {'train', 'val'}
+
+        # get the shard filenmes
+        data_root = "../data/edu_fineweb10B"
+        shards = os.listdir(data_root)
+        shards = [s for s in shards if split in s]
+        shards = sorted(shards)
+        self.shards = [os.path.join(data_root, s) for s in shards]
+        assert len(self.shards) > 0, f"no shards found for split {split}"
+        if master_process:
+            print(f"found {len(self.shards)} shards for split {split}")
+
+        # state, init at shard zero
+        self.current_shard = 0
+        self.tokens = load_tokens(self.shards[self.current_shard])
 
         # at init load tokens from disk and store them in memory
         with open('../input.txt', 'r') as f:
@@ -208,8 +230,9 @@ class DataLoaderLite:
         enc = tiktoken.get_encoding('gpt2')
         tokens = enc.encode(text)
         self.tokens = torch.tensor(tokens)
-        print(f"loaded {len(self.tokens)} tokens")
-        print(f"1 epoch = {len(self.tokens) // (self.B * self.T)} batches")
+        if master_process:
+            print(f"loaded {len(self.tokens)} tokens")
+            print(f"1 epoch = {len(self.tokens) // (self.B * self.T)} batches")
         
         # state 
         self.current_position = self.B * self.T * self.process_rank
@@ -222,8 +245,10 @@ class DataLoaderLite:
         # advance the position in the tensor
         self.current_position += self.B * self.T * self.num_processes
 
-        # if loading the next batch would be out of bounds, reset
+        # if loading the next batch would be out of bounds, advance to next shard
         if self.current_position + (self.B * self.T * self.num_processes + 1) > len(self.tokens):
+            self.current_shard = (self.current_shard + 1) % len(self.shards)
+            self.tokens = load_tokens(self.shards[self.current_shard])
             self.current_position = self.B * self.T * self.process_rank
 
         return x, y
@@ -280,7 +305,7 @@ if master_process:
 print(f"i'm GPU {ddp_rank}")
 
 # init dataloader
-train_loader = DataLoaderLite(B=8, T=1024, process_rank=ddp_rank, num_processes=ddp_world_size)
+train_loader = DataLoaderLite(B=8, T=1024, process_rank=ddp_rank, num_processes=ddp_world_size, split='train')
 
 torch.set_float32_matmul_precision('high')
 
@@ -308,8 +333,10 @@ raw_model = model.module if ddp else model
 
 max_lr = 6e-4
 min_lr = max_lr * 0.1
-warmup_steps = 10
-max_steps = 50
+# 10 billion tokens, and we have 524288 tokens per batch
+# max_steps = 10b/524288 = 19073
+warmup_steps = 715
+max_steps = 19073
 def get_lr(it):
     # 1) linear warmup for warmup_iters steps
     if it < warmup_steps:
