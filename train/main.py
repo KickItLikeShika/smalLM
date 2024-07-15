@@ -113,17 +113,17 @@ class LLM(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
-        
+
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(self.config.vocab_size, self.config.embed_size),  # weights of token embeddings
             wpe = nn.Embedding(self.config.block_size, self.config.embed_size),  # weights of position embeddings (position encoding)
             h = nn.ModuleList([TransformerDecoderBlock(self.config) for _ in range(self.config.n_layer)]),  # number of layers of the transformer decoder block
             ln_f = nn.LayerNorm(self.config.embed_size)  # layer normalization
         ))
-        
+
         # head to choose the next token to generate (think of it like doing classifying over the whole vocab)
         self.lm_head = nn.Linear(self.config.embed_size, self.config.vocab_size, bias=False)  
-        
+
         # weight sharing scheme (recommened by attention is all you need paper)
         self.transformer.wte.weight = self.lm_head.weight
         # another benifit from this is also saving memory, since this will be now the same matrix in memory, and this is very big amount of params
@@ -389,6 +389,7 @@ for step in range(max_steps):
 
     # evalaute every 100 steps
     if step % 100 == 0 or last_step:
+    # if step % 10 == 0 or last_step:
         model.eval()
         val_loader.reset()
 
@@ -413,6 +414,18 @@ for step in range(max_steps):
             print(f"validation loss: {val_loss_accum.item():.4f}")
             with open(log_file, "a") as f:
                 f.write(f"{step} val {val_loss_accum.item():.4f}\n")
+            if step > 0 and (step % 5000 == 0 or last_step):
+            # if step > 0 and (step % 1 == 0 or last_step):
+                checkpoint_path = os.path.join(log_dir, f"model_{step}.pt")
+                checkpoint = {
+                    'model': raw_model.state_dict(),
+                    'config': raw_model.config,
+                    'step': step,
+                    'val_loss': val_loss_accum.item(),
+                    'optim': optimizer.state_dict(),
+                    'seed': 1337
+                }
+                torch.save(checkpoint, checkpoint_path)
 
     # evaluate hellaswag
     if (step % 250 == 0 or last_step) and (not use_compile):
@@ -451,11 +464,10 @@ for step in range(max_steps):
             with open(log_file, "a") as f:
                 f.write(f"{step} hella {acc_norm:.4f}\n")
 
-
     # generate from the model excpet step 0, which is noise
     # disabled torch.compile throws an error i can't solve rn
     # TODO: FIX THE TORCH COMPILE ISSUE
-    if step((step > 0 and step % 250 == 0) or last_step) and (not use_compile):
+    if ((step > 0 and step % 250 == 0) or last_step) and (not use_compile):
     # if step % 10 == 0:
         model.eval()
         num_return_sequences = 4
