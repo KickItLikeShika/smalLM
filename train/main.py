@@ -12,6 +12,8 @@ from torch.distributed import init_process_group, destroy_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
 
+from hellaswag import render_example, iterate_examples
+
 
 def load_tokens(filename):
     npt = np.load(filename)
@@ -309,9 +311,12 @@ print(model)
 # but it makes your training much faster
 # this is like the GCC compiler of neutral nets
 # speedup comes from reducing python overhead + gpu read/writes
-# model = torch.compile(model)
-# print('compiled model')
-# print(model)
+use_compile = False
+if use_compile:
+    model = torch.compile(model)
+    print('compiled model')
+    print(model)
+
 if ddp:
     model = DDP(model, device_ids=[ddp_local_rank])
 print('ddp model')
@@ -346,14 +351,44 @@ def get_lr(it):
     return min_lr + coeff * (max_lr - min_lr)
 
 
+# helper function for HellaSwag eval
+# takes tokens, mask, and logits, returns the index of the completion with the lowest loss
+def get_most_likely_row(tokens, mask, logits):
+    # evaluate the autoregressive loss at all positions
+    shift_logits = (logits[..., :-1, :]).contiguous()
+    shift_tokens = (tokens[..., 1:]).contiguous()
+    flat_shift_logits = shift_logits.view(-1, shift_logits.size(-1))
+    flat_shift_tokens = shift_tokens.view(-1)
+    shift_losses = F.cross_entropy(flat_shift_logits, flat_shift_tokens, reduction='none')
+    shift_losses = shift_losses.view(tokens.size(0), -1)
+    # now get the average loss just for the completion region (where mask == 1), in each row
+    shift_mask = (mask[..., 1:]).contiguous() # we must shift mask, so we start at the last prompt token
+    masked_shift_losses = shift_losses * shift_mask
+    # sum and divide by the number of 1s in the mask
+    sum_loss = masked_shift_losses.sum(dim=1)
+    avg_loss = sum_loss / shift_mask.sum(dim=1)
+    # now we have a loss for each of the 4 completions
+    # the one with the lowest loss should be the most likely
+    pred_norm = avg_loss.argmin().item()
+    return pred_norm
+
+
 optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device_type=device_type)
 enc = tiktoken.get_encoding('gpt2')
 
+# create the log directory we will write checkpoints to and log to
+log_dir = 'log'
+os.makedirs(log_dir, exist_ok=True)
+log_file = os.path.join(log_dir, f"log.txt")
+with open(log_file, "w") as f:
+    pass
+
 for step in range(max_steps):
     t0 = time.time()
+    last_step = (step == max_steps - 1)
 
     # evalaute every 100 steps
-    if step % 100 == 0:
+    if step % 100 == 0 or last_step:
         model.eval()
         val_loader.reset()
 
@@ -376,12 +411,52 @@ for step in range(max_steps):
 
         if master_process:
             print(f"validation loss: {val_loss_accum.item():.4f}")
+            with open(log_file, "a") as f:
+                f.write(f"{step} val {val_loss_accum.item():.4f}\n")
+
+    # evaluate hellaswag
+    if (step % 250 == 0 or last_step) and (not use_compile):
+    # if step % 10 == 0:
+        num_correct_norm = 0
+        num_total = 0
+        for i, example in enumerate(iterate_examples("val")):
+            # only process examples where i % ddp_world_size == ddp_rank
+            if i % ddp_world_size != ddp_rank:
+                continue
+
+            # render the example
+            _, tokens, mask, label = render_example(example)
+            tokens, mask = tokens.to(device), mask.to(device)
+            
+            # get the logits
+            with torch.no_grad():
+                with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+                    logits, loss = model(tokens)
+                pred_norm = get_most_likely_row(tokens, mask, logits)
+            num_total += 1
+            num_correct_norm += int(pred_norm == label)
+
+        # reduce the stats across all gpus
+        if ddp:
+            num_total = torch.tensor(num_total, dtype=torch.long, device=device)
+            num_correct_norm = torch.tensor(num_correct_norm, dtype=torch.long, device=device)
+            dist.all_reduce(num_total, op=dist.ReduceOp.SUM)
+            dist.all_reduce(num_correct_norm, op=dist.ReduceOp.SUM)
+            num_total = num_total.item()
+            num_correct_norm = num_correct_norm.item()
+
+        acc_norm = num_correct_norm / num_total
+        if master_process:
+            print(f"HellaSwag accuracy: {num_correct_norm}/{num_total}={acc_norm:.4f}")
+            with open(log_file, "a") as f:
+                f.write(f"{step} hella {acc_norm:.4f}\n")
+
 
     # generate from the model excpet step 0, which is noise
     # disabled torch.compile throws an error i can't solve rn
     # TODO: FIX THE TORCH COMPILE ISSUE
-    # if step > 0 and step % 100 == 0:
-    if step % 100 == 0:
+    if step((step > 0 and step % 250 == 0) or last_step) and (not use_compile):
+    # if step % 10 == 0:
         model.eval()
         num_return_sequences = 4
         max_length = 32
@@ -395,8 +470,7 @@ for step in range(max_steps):
             # forward the model to get the logits
             with torch.no_grad():
                 with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
-                    # logits, loss = model(xgen)  # (B, T, vocab_size)
-                    logits, loss = raw_model(xgen)  # (B, T, vocab_size)
+                    logits, loss = model(xgen)  # (B, T, vocab_size)
 
                 # take the logits at the last position
                 logits = logits[:, -1, :] # (B, vocab_size)
@@ -471,6 +545,8 @@ for step in range(max_steps):
 
     if master_process:
         print(f"step: {step:4d} | loss: {loss_accum.item():.6f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}")
+        with open(log_file, "a") as f:
+            f.write(f"{step} train {loss_accum.item():.6f}\n")
 
 if ddp:
     destroy_process_group()
