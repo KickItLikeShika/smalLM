@@ -309,14 +309,15 @@ print(model)
 # but it makes your training much faster
 # this is like the GCC compiler of neutral nets
 # speedup comes from reducing python overhead + gpu read/writes
-model = torch.compile(model)
-print('compiled model')
-print(model)
+# model = torch.compile(model)
+# print('compiled model')
+# print(model)
 if ddp:
     model = DDP(model, device_ids=[ddp_local_rank])
 print('ddp model')
 print(model)
 raw_model = model.module if ddp else model
+# print(f"raw model device: {raw_model.device}")
 
 # to make sure we are not being biased towards any element at the beginning of the training
 # and also make sure the weights init was legit, we have a formula to calcuate what's the reasonable starting loss (with no training at all)
@@ -376,6 +377,52 @@ for step in range(max_steps):
         if master_process:
             print(f"validation loss: {val_loss_accum.item():.4f}")
 
+    # generate from the model excpet step 0, which is noise
+    # disabled torch.compile throws an error i can't solve rn
+    # TODO: FIX THE TORCH COMPILE ISSUE
+    # if step > 0 and step % 100 == 0:
+    if step % 100 == 0:
+        model.eval()
+        num_return_sequences = 4
+        max_length = 32
+        tokens = enc.encode("Hello, I'm a language model,")
+        tokens = torch.tensor(tokens, dtype=torch.long)
+        tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
+        xgen = tokens.to(device)
+        sample_rng = torch.Generator(device=device)
+        sample_rng.manual_seed(42 + ddp_rank)
+        while xgen.size(1) < max_length:
+            # forward the model to get the logits
+            with torch.no_grad():
+                with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
+                    # logits, loss = model(xgen)  # (B, T, vocab_size)
+                    logits, loss = raw_model(xgen)  # (B, T, vocab_size)
+
+                # take the logits at the last position
+                logits = logits[:, -1, :] # (B, vocab_size)
+
+                # get the probs
+                probs = F.softmax(logits, dim=-1)
+
+                # do top-k sampling of 50 (huggingface pipeline default)
+                # topk_probs here becomes (5, 50), topk_indices is (5, 50)
+                topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
+
+                # select a token from the top-k probabilities
+                # note: multinomial does not demand the input to sum to 1
+                ix = torch.multinomial(topk_probs, 1, generator=sample_rng)  # (B, 1)
+
+                # gather the corresponding indices
+                xcol = torch.gather(topk_indices, -1, ix)  # (B, 1)
+                
+                # append to the sequence
+                xgen = torch.cat((xgen, xcol), dim=1)
+        # print the generated text
+        for i in range(num_return_sequences):
+            tokens = xgen[i, :max_length].tolist()
+            decoded = enc.decode(tokens)
+            print(f"rank {ddp_rank} sample {i}: {decoded}")
+
     # training loop
     model.train()
     optimizer.zero_grad()
@@ -387,8 +434,8 @@ for step in range(max_steps):
         # amp
         with torch.autocast(device_type=device_type, dtype=torch.bfloat16):
             logits, loss = model(x, y)
-            
-        # we have to scalre the loss to account for gradient accumulation,
+
+        # we have to scale the loss to account for gradient accumulation,
         # because the gradients just add on each successive backward().
         # addition of gradients corresponds to a SUM in the objective, but
         # instead of a SUM we want MEAN. scale th loss here so it comes out right
