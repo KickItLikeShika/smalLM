@@ -5,12 +5,12 @@ import sentencepiece as spm
 
 local_dir = "edu_fineweb10B"
 remote_name = "sample-10BT"
-# dataset = load_dataset("HuggingFaceFW/fineweb-edu", name=remote_name, split="train")
+dataset = load_dataset("HuggingFaceFW/fineweb-edu", name=remote_name, split="train")
 
 dataset_file = "samples.txt"
-# with open(dataset_file, "w") as f:
-#     for example in dataset:
-#         f.write(example["text"] + "\n")
+with open(dataset_file, "w") as f:
+    for example in dataset:
+        f.write(example["text"] + "\n")
 
 
 model_prefix = "tokenizer"
@@ -26,7 +26,8 @@ spm.SentencePieceTrainer.train(
     normalization_rule_name='identity',  # turn off normalization
     remove_extra_whitespaces=False,
     # input_sentence_size=10000000000, # number of training examples: 10B
-    input_sentence_size=120000000, # number of training examples: 120m
+    # input_sentence_size=120000000, # number of training examples: 120m
+    input_sentence_size=50000000, # number of training examples: 50m
     max_sentence_length=16384,
     shuffle_input_sentence=True,
     character_coverage=1.0,
@@ -46,7 +47,6 @@ spm.SentencePieceTrainer.train(
     eos_piece="<|end_of_text|>",
     eos_id=2,
     pad_id=-1,
-    # padding_side='right', 
     num_threads=os.cpu_count(),
 )
 
@@ -59,3 +59,5 @@ text = "A beginning is the time for taking the most delicate care that the balan
 
 encoded = tokenizer.encode(text)
 print(encoded)
+
+# 202m samples and 10B tokens
