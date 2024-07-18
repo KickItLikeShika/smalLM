@@ -44,10 +44,7 @@ class CausalSelfAttention(nn.Module):
         
         self.n_head = config.n_head
         self.embed_size = config.embed_size
-        
-        # not a 'bias', but more of a mask, but just following HF/OPAI naming
-        self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size)).view(1, 1, config.block_size, config.block_size))
-        
+
     def forward(self, x):
         B, T, C = x.size()  # batch_size, sequence length, embedding dimension
         
@@ -55,7 +52,7 @@ class CausalSelfAttention(nn.Module):
         # nh is "number of heads", hs is "head size", and C (number of channels) = nh * hs
         # e.g. in GPT-2 (124M), n_head=12, hs=64, so nh*hs=C=768 channels in the Transformer
         qkv = self.c_attn(x)
-        
+
         q, k, v = qkv.split(self.embed_size, dim=2)
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
         k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
