@@ -14,6 +14,7 @@ import numpy as np
 from transformers import AutoTokenizer
 from datasets import load_dataset # pip install datasets
 from tqdm import tqdm # pip install tqdm
+import sentencepiece as spm
 
 # ------------------------------------------
 local_dir = "edu_fineweb10B_custom_tokenizer"
@@ -26,19 +27,20 @@ os.makedirs(DATA_CACHE_DIR, exist_ok=True)
 
 # download the dataset
 fw = load_dataset("HuggingFaceFW/fineweb-edu", name=remote_name, split="train")
-
-# init the tokenizer
-# enc = tiktoken.get_encoding("gpt2")
-# eot = enc._special_tokens['<|endoftext|>'] # end of text token
-
-enc = AutoTokenizer.from_pretrained('../train/custom_tokenizer_hf')
-eot = enc.convert_tokens_to_ids("")
-# eot = enc._special_tokens['<|end_of_text|>'] # end of text token
+# enc = AutoTokenizer.from_pretrained('../train/new-tokenizer-hf-fast')
+# eot = enc.convert_tokens_to_ids('</s>')
+enc = spm.SentencePieceProcessor()
+enc.load("../train/new-tokenizer/tokenizer.model")
+# bot = enc.piece_to_id('<s>')  # beginning of text
+eot = enc.piece_to_id('</s>')  # end of text
+# print(bot)
+print(eot)
 
 def tokenize(doc):
     # tokenizes a single document and returns a numpy array of uint16 tokens
     tokens = [eot] # the special <|endoftext|> token delimits all documents
-    tokens.extend(enc.encode(doc["text"]))
+    encoded_text = enc.encode(doc["text"])
+    tokens.extend(encoded_text)
     tokens_np = np.array(tokens)
     assert (0 <= tokens_np).all() and (tokens_np < 2**16).all(), "token dictionary too large for uint16"
     tokens_np_uint16 = tokens_np.astype(np.uint16)
