@@ -11,6 +11,8 @@ import tiktoken
 from torch.distributed import init_process_group, destroy_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
+from transformers import AutoTokenizer
+import sentencepiece as sp
 
 from hellaswag import render_example, iterate_examples
 
@@ -209,7 +211,8 @@ class DataLoaderLite:
         assert split in {'train', 'val'}
 
         # get the shard filenmes
-        data_root = "../data/edu_fineweb10B"
+        # data_root = "../data/edu_fineweb10B"
+        data_root = "../data/edu_fineweb10B_custom_tokenizer"
         shards = os.listdir(data_root)
         shards = [s for s in shards if split in s]
         shards = sorted(shards)
@@ -371,7 +374,9 @@ def get_most_likely_row(tokens, mask, logits):
 
 
 optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device_type=device_type)
-enc = tiktoken.get_encoding('gpt2')
+# enc = tiktoken.get_encoding('gpt2')
+enc = sp.SentencePieceProcessor()
+enc.load('new-tokenizer/tokenizer.model')
 
 # create the log directory we will write checkpoints to and log to
 log_dir = 'log'
@@ -385,8 +390,8 @@ for step in range(max_steps):
     last_step = (step == max_steps - 1)
 
     # evalaute every 100 steps
-    if step % 100 == 0 or last_step:
-    # if step % 10 == 0 or last_step:
+    # if step % 100 == 0 or last_step:
+    if step % 10 == 0 or last_step:
         model.eval()
         val_loader.reset()
 
