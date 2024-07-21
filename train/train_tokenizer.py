@@ -1,11 +1,14 @@
 import os
+from tqdm import tqdm
+
 from datasets import load_dataset
 import sentencepiece as spm
 
 
 local_dir = "edu_fineweb10B"
 remote_name = "sample-10BT"
-dataset = load_dataset("HuggingFaceFW/fineweb-edu", name=remote_name, split="train")
+dataset = load_dataset("HuggingFaceFW/fineweb-edu", name=remote_name, split="train")  # total size: 9672101
+dataset = dataset.select(range(0, 4000000))  #4m 
 
 dataset_file = "samples.txt"
 with open(dataset_file, "w") as f:
@@ -27,8 +30,9 @@ spm.SentencePieceTrainer.train(
     remove_extra_whitespaces=False,
     # input_sentence_size=10000000000, # number of training examples: 10B
     # input_sentence_size=120000000, # number of training examples: 120m
-    input_sentence_size=50000000, # number of training examples: 50m
-    max_sentence_length=16384,
+    # input_sentence_size=50000000, # number of training examples: 50m
+    input_sentence_size=20000000, # number of training examples: 20m
+    max_sentence_length=1024,
     shuffle_input_sentence=True,
     character_coverage=1.0,
     byte_fallback=True,
@@ -40,13 +44,13 @@ spm.SentencePieceTrainer.train(
     max_sentencepiece_length=16,
     add_dummy_prefix=True,
     allow_whitespace_only_pieces=True,
-    unk_piece="<unk>",
-    unk_id=0,
-    bos_piece="<|begin_of_text|>",
-    bos_id=1,
-    eos_piece="<|end_of_text|>",
-    eos_id=2,
-    pad_id=-1,
+    # unk_id=0,
+    # bos_id=1,
+    # eos_id=2,
+    # pad_id=-1,
+    # unk_piece="<unk>",
+    # bos_piece="<|begin_of_text|>",
+    # eos_piece="<|end_of_text|>",
     num_threads=os.cpu_count(),
 )
 
@@ -60,4 +64,26 @@ text = "A beginning is the time for taking the most delicate care that the balan
 encoded = tokenizer.encode(text)
 print(encoded)
 
-# 202m samples and 10B tokens
+##! this is still not working properly
+# transforming the tokenizer into a pretrainedfasttokenizer by HF
+# import sentencepiece as spm
+# from transformers import PreTrainedTokenizerFast
+# from tokenizers import SentencePieceBPETokenizer
+
+# sp_model = spm.SentencePieceProcessor()
+# sp_model.load("tokenizer.model")
+
+# tokenizer = SentencePieceBPETokenizer()
+# vocab = {sp_model.id_to_piece(id): id for id in range(sp_model.GetPieceSize())}
+# tokenizer.add_tokens(list(vocab.keys()))
+# special_tokens = ["<s>", "</s>", "<unk>", "<pad>"]
+# tokenizer.add_special_tokens(special_tokens)
+# fast_tokenizer = PreTrainedTokenizerFast(
+#     tokenizer_object=tokenizer,
+#     bos_token="<s>",
+#     eos_token="</s>",
+#     unk_token="<unk>",
+#     pad_token="<pad>"
+# )
+
+# fast_tokenizer.save_pretrained("new-tokenizer-hf-fast")
