@@ -64,6 +64,10 @@ text = "A beginning is the time for taking the most delicate care that the balan
 encoded = tokenizer.encode(text)
 print(encoded)
 
+
+# probably this is how you can convert the tokenizer to hf
+# https://github.com/jzhang38/TinyLlama/blob/main/lit_gpt/tokenizer.py#L9-L29
+
 ##! this is still not working properly
 # transforming the tokenizer into a pretrainedfasttokenizer by HF
 # import sentencepiece as spm

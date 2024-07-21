@@ -17,6 +17,8 @@ import sentencepiece as sp
 from hellaswag import render_example, iterate_examples
 
 
+#! implement RoPE + Grouped Query Attn + Deep and Thin + RMSNorm + Gradient Checkpointing + Flash Attn 3
+
 def load_tokens(filename):
     npt = np.load(filename)
     ptt = torch.tensor(npt, dtype=torch.long)
