@@ -13,11 +13,11 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
 from transformers import AutoTokenizer
 import sentencepiece as sp
+from rotary_embedding_torch import RotaryEmbedding
 
 from hellaswag import render_example, iterate_examples
 
-
-#! implement RoPE + Grouped Query Attn + Deep and Thin + RMSNorm + Gradient Checkpointing + Flash Attn 3
+#! Grouped Query Attn + Deep and Thin + RMSNorm + Gradient Checkpointing + Flash Attn 3
 
 def load_tokens(filename):
     npt = np.load(filename)
@@ -38,7 +38,7 @@ class CausalSelfAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
         assert config.embed_size % config.n_head == 0
-        
+        self.rotary_emb = RotaryEmbedding(dim=config.n_head)
         # key, query, value projections for all heads, but in batch
         self.c_attn = nn.Linear(config.embed_size, 3 * config.embed_size)
         
@@ -62,6 +62,11 @@ class CausalSelfAttention(nn.Module):
         k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2)  # (B, nh, T, hs)
         
+        # rotaty positional encoding is applied to query and key, instead of the embeddings directly.
+        # cos, sin = rope
+        # apply rope in fp32 significanly stabalize training
+        q = self.rotary_emb.rotate_queries_or_keys(q)
+        k = self.rotary_emb.rotate_queries_or_keys(k)
         # attention (matrializes the large (T, T) matrix for all the queries and keys)
         # traditional attention
         # att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))
@@ -117,7 +122,7 @@ class LLM(nn.Module):
 
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(self.config.vocab_size, self.config.embed_size),  # weights of token embeddings
-            wpe = nn.Embedding(self.config.block_size, self.config.embed_size),  # weights of position embeddings (position encoding)
+            # wpe = nn.Embedding(self.config.block_size, self.config.embed_size),  # weights of position embeddings (position encoding)
             h = nn.ModuleList([TransformerDecoderBlock(self.config) for _ in range(self.config.n_layer)]),  # number of layers of the transformer decoder block
             ln_f = nn.LayerNorm(self.config.embed_size)  # layer normalization
         ))
@@ -154,10 +159,11 @@ class LLM(nn.Module):
         assert T <= self.config.block_size, f"Cannot forward sequence of length {T}, block size is only {self.config.block_size}"
         
         # forward the token and position embeddings
-        pos = torch.arange(0, T, dtype=torch.long, device=idx.device)
-        pos_emb = self.transformer.wpe(pos)  # position embeddings of shape T, embed_size
-        tok_emb = self.transformer.wte(idx)  # token embeddings (B, T, embed_size)
-        x = tok_emb + pos_emb
+        # pos = torch.arange(0, T, dtype=torch.long, device=idx.device)
+        # pos_emb = self.transformer.wpe(pos)  # position embeddings of shape T, embed_size
+        # tok_emb = self.transformer.wte(idx)  # token embeddings (B, T, embed_size)
+        x = self.transformer.wte(idx)  # token embeddings (B, T, embed_size)
+        # x = tok_emb + pos_emb
         
         # forward the blocks of the transforme
         for block in self.transformer.h:
