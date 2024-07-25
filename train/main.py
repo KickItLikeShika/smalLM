@@ -1,5 +1,6 @@
-import os
 import time
+import os
+import wandb
 from dataclasses import dataclass
 import inspect
 import math
@@ -14,10 +15,23 @@ import torch.distributed as dist
 from transformers import AutoTokenizer
 import sentencepiece as sp
 from rotary_embedding_torch import RotaryEmbedding
-
 from hellaswag import render_example, iterate_examples
 
-#! Grouped Query Attn + Deep and Thin + RMSNorm + Gradient Checkpointing + Flash Attn 3
+
+wandb.init(
+    # set the wandb project where this run will be logged
+    project="smallLM",
+    # track hyperparameters and run metadata
+    config={
+    "seq_len": 1024,
+    "vocab_size": 50304,
+    "n_layer": 32,
+    "n_head": 24,
+    "embed_size": 768,
+    "learning_rate": 6e-4,
+    }
+)
+
 
 def load_tokens(filename):
     npt = np.load(filename)
@@ -28,9 +42,9 @@ def load_tokens(filename):
 @dataclass
 class Config:
     block_size: int = 1024  # max seq length
-    vocab_size: int = 50257  # number of tokens: 50,000 BPE merges + 265 bytes tokens + 1 <|endoftext|> token
-    n_layer: int = 12  # number of layers
-    n_head: int = 12  # number of attention heads
+    vocab_size: int = 50304  # number of tokens: 50,000 BPE merges + 265 bytes tokens + 1 <|endoftext|> token
+    n_layer: int = 32  # number of layers
+    n_head: int = 24  # number of attention heads
     embed_size: int = 768  # embeddings dimension
 
 
@@ -41,11 +55,11 @@ class CausalSelfAttention(nn.Module):
         self.rotary_emb = RotaryEmbedding(dim=config.n_head)
         # key, query, value projections for all heads, but in batch
         self.c_attn = nn.Linear(config.embed_size, 3 * config.embed_size)
-        
+
         # output projection
         self.c_proj = nn.Linear(config.embed_size, config.embed_size)
         self.c_proj.NANOGPT_SCALE_INIT = 1.0
-        
+
         self.n_head = config.n_head
         self.embed_size = config.embed_size
 
@@ -319,7 +333,7 @@ print(model)
 # but it makes your training much faster
 # this is like the GCC compiler of neutral nets
 # speedup comes from reducing python overhead + gpu read/writes
-use_compile = False
+use_compile = True
 if use_compile:
     model = torch.compile(model)
     print('compiled model')
@@ -398,8 +412,8 @@ for step in range(max_steps):
     last_step = (step == max_steps - 1)
 
     # evalaute every 100 steps
-    # if step % 100 == 0 or last_step:
-    if step % 10 == 0 or last_step:
+    if step % 100 == 0 or last_step:
+    # if step % 10 == 0 or last_step:
         model.eval()
         val_loader.reset()
 
@@ -422,8 +436,11 @@ for step in range(max_steps):
 
         if master_process:
             print(f"validation loss: {val_loss_accum.item():.4f}")
+            wandb.log({"validation loss": val_loss_accum.item()})
+            
             with open(log_file, "a") as f:
                 f.write(f"{step} val {val_loss_accum.item():.4f}\n")
+
             if step > 0 and (step % 5000 == 0 or last_step):
             # if step > 0 and (step % 1 == 0 or last_step):
                 checkpoint_path = os.path.join(log_dir, f"model_{step}.pt")
@@ -438,8 +455,9 @@ for step in range(max_steps):
                 torch.save(checkpoint, checkpoint_path)
 
     # evaluate hellaswag
-    if (step % 250 == 0 or last_step) and (not use_compile):
-    # if step % 10 == 0:
+    # if (step % 250 == 0 or last_step) and (not use_compile):
+    # if (step % 250 == 0 or last_step):
+    if step % 10 == 0:
         num_correct_norm = 0
         num_total = 0
         for i, example in enumerate(iterate_examples("val")):
@@ -471,14 +489,17 @@ for step in range(max_steps):
         acc_norm = num_correct_norm / num_total
         if master_process:
             print(f"HellaSwag accuracy: {num_correct_norm}/{num_total}={acc_norm:.4f}")
+            wandb.log({"HellaSwag accuracy": num_correct_norm/num_total})
+
             with open(log_file, "a") as f:
                 f.write(f"{step} hella {acc_norm:.4f}\n")
 
     # generate from the model excpet step 0, which is noise
     # disabled torch.compile throws an error i can't solve rn
     # TODO: FIX THE TORCH COMPILE ISSUE
-    if ((step > 0 and step % 250 == 0) or last_step) and (not use_compile):
-    # if step % 10 == 0:
+    # if ((step > 0 and step % 250 == 0) or last_step) and (not use_compile):
+    # if ((step > 0 and step % 250 == 0) or last_step):
+    if step % 10 == 0:
         model.eval()
         num_return_sequences = 4
         max_length = 32
@@ -513,6 +534,7 @@ for step in range(max_steps):
                 
                 # append to the sequence
                 xgen = torch.cat((xgen, xcol), dim=1)
+
         # print the generated text
         for i in range(num_return_sequences):
             tokens = xgen[i, :max_length].tolist()
@@ -537,7 +559,7 @@ for step in range(max_steps):
         # instead of a SUM we want MEAN. scale th loss here so it comes out right
         loss = loss / grad_accum_steps
         loss_accum += loss.detach()
-        
+
         # manually toggle this require_backward_grad_sync to perform the all reduce at while doing backprop, 
         # to sync the gradient updates across gpus avoid using 
         # instead we could use the kinda ugly and long ddp sync context manager
@@ -567,8 +589,12 @@ for step in range(max_steps):
 
     if master_process:
         print(f"step: {step:4d} | loss: {loss_accum.item():.6f} | lr: {lr:.4e} | norm: {norm:.4f} | dt: {dt*1000:.2f}ms | tok/sec: {tokens_per_sec:.2f}")
+        wandb.log({"step": step, "loss": loss_accum.item(), "lr": lr, "norm": norm, "dt": dt*1000, "tok/sec": tokens_per_sec})
+        
         with open(log_file, "a") as f:
             f.write(f"{step} train {loss_accum.item():.6f}\n")
 
 if ddp:
     destroy_process_group()
+
+wandb.finish()
