@@ -41,6 +41,6 @@ def evaluate(step, last_step, model, raw_model, val_loader, optimizer, device, d
                 'step': step,
                 'val_loss': val_loss_accum.item(),
                 'optim': optimizer.state_dict(),
-                'seed': 1337
+                'seed': 1319
             }
             torch.save(checkpoint, checkpoint_path)
