@@ -1,4 +1,4 @@
-# MiniArLLM
+# SmallLM
 
 Training and Evaluating an Ar LLM from scratch.
 
