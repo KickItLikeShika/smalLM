@@ -28,10 +28,11 @@ wandb.init(
     "seq_len": 1024,
     # set the wandb project where this run will be logged
     "vocab_size": 50304,
-    "n_layer": 32,
-    "n_head": 24,
+    "n_layer": 12,
+    "n_head": 12,
     "embed_size": 768,
     "learning_rate": 6e-4,
+    "tokenizer": 'gpt-2'
     }
 )
 
@@ -100,7 +101,7 @@ print(model)
 # but it makes your training much faster
 # this is like the GCC compiler of neutral nets
 # speedup comes from reducing python overhead + gpu read/writes
-use_compile = True
+use_compile = False
 if use_compile:
     model = torch.compile(model)
     print('compiled model')
@@ -108,8 +109,8 @@ if use_compile:
 
 if ddp:
     model = DDP(model, device_ids=[ddp_local_rank])
-print('ddp model')
-print(model)
+    print('ddp model')
+    print(model)
 raw_model = model.module if ddp else model
 # print(f"raw model device: {raw_model.device}")
 
@@ -121,9 +122,9 @@ raw_model = model.module if ddp else model
 # print(loss)
 
 optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device_type=device_type)
-# enc = tiktoken.get_encoding('gpt2')
-enc = sp.SentencePieceProcessor()
-enc.load('new-tokenizer/tokenizer.model')
+enc = tiktoken.get_encoding('gpt2')
+# enc = sp.SentencePieceProcessor()
+# enc.load('new-tokenizer/tokenizer.model')
 
 # create the log directory we will write checkpoints to and log to
 log_dir = 'log'

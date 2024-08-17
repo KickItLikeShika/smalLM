@@ -18,8 +18,8 @@ class DataLoaderLite:
         assert split in {'train', 'val'}
 
         # get the shard filenmes
-        # data_root = "../data/edu_fineweb10B"
-        data_root = "../data/edu_fineweb10B_custom_tokenizer"
+        data_root = "../data/edu_fineweb10B"
+        # data_root = "../data/edu_fineweb10B_custom_tokenizer"
         shards = os.listdir(data_root)
         shards = [s for s in shards if split in s]
         shards = sorted(shards)
