@@ -28,9 +28,9 @@ wandb.init(
     "seq_len": 1024,
     # set the wandb project where this run will be logged
     "vocab_size": 50304,
-    "n_layer": 12,
-    "n_head": 12,
-    "embed_size": 768,
+    "n_layer": 32,
+    "n_head": 32,
+    "embed_size": 1024,
     "learning_rate": 6e-4,
     "tokenizer": 'gpt-2'
     }
@@ -40,7 +40,7 @@ wandb.init(
 # max_steps = 10b/524288 = 19073
 max_steps = 19073
 total_batch_size = 524288  # 2**19, 0.5M, in number of tokens
-B = 8  # micro batch size
+B = 4  # micro batch size
 T = 1024  # sequence length
 
 # setup DDP (distributed data parallel).
